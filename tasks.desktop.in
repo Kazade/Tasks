@@ -1,0 +1,8 @@
+[Desktop Entry]
+_Name=Tasks
+_Comment=Tasks application
+Categories=GNOME;Utility;
+Exec=tasks
+Icon=tasks
+Terminal=false
+Type=Application

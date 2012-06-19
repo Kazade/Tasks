@@ -1,0 +1,9 @@
+<glade-catalog name="preferences_tasks_dialog" domain="glade-3" 
+               depends="gtk+" version="1.0">
+  <glade-widget-classes>
+    <glade-widget-class title="Tasks Preferences Dialog" name="PreferencesTasksDialog" 
+                        generic-name="PreferenceTasksDialog" parent="GtkDialog"
+                        icon-name="widget-gtk-dialog"/>
+  </glade-widget-classes>
+
+</glade-catalog>
