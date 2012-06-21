@@ -3,6 +3,7 @@ import uuid
 import datetime
 
 from .project import Project
+from .tag import Tag
 
 POSSIBLE_IMPORTANCE_CHOICES = [
     ("VERY_LOW", "Very Low"),
@@ -31,7 +32,15 @@ class DueTodayManager(models.Manager):
 class OverdueManager(models.Manager):
     def get_query_set(self):
         return super(OverdueManager, self).get_query_set().filter(due_date__lt=datetime.datetime.today())
-                    
+
+class UnarchivedManager(models.Manager):
+    def get_query_set(self):
+        return super(UnarchivedManager, self).get_query_set().filter(archived=False)    
+
+class ArchivedManager(models.Manager):
+    def get_query_set(self):
+        return super(UnarchivedManager, self).get_query_set().filter(archived=True)    
+
 def make_uuid():
     return str(uuid.uuid4()).replace('-','')
 
@@ -43,21 +52,26 @@ class Task(models.Model):
 
     uuid = models.CharField(max_length=255, unique=True, default=make_uuid)
     complete = models.BooleanField(default=False)
+    archived = models.BooleanField(default=False)
     importance = models.CharField(max_length=64, choices=POSSIBLE_IMPORTANCE_CHOICES, default="NORMAL")
     summary = models.CharField(max_length=512)    
     due_date = models.DateField(null=True)
+    
+    tags = models.ManyToManyField(Tag)
     
     class Meta:
         db_table = "tasks_task"
         app_label = "tasks"
         
-    objects = models.Manager()
+    objects = UnarchivedManager()
     objects_important = ImportantManager()
     objects_completed = CompletedManager()
     objects_uncompleted = UncompletedManager()
     objects_due_today = DueTodayManager()
     objects_overdue = OverdueManager()
+    objects_archived = ArchivedManager()
     
     def __unicode__(self):
         return self.summary
+
 

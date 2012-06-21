@@ -17,8 +17,26 @@ from tasks.PreferencesTasksDialog import PreferencesTasksDialog
 from tasks.NewTaskDialog import NewTaskDialog
 from tasks.models import Task, Tag
 
+from .image_toggle import ImageToggle
+from .task_details_pane import TaskDetailsPane
+
 import os
 import ConfigParser
+
+UNCHECKED_IMAGE = "./data/media/unchecked.svg"
+CHECKED_IMAGE = "./data/media/checked.svg"
+
+from django.db.models.signals import post_save
+
+class sync_checkbox_to_task_complete(object):
+    def __init__(self, checkbox, task):
+        self._checkbox = checkbox
+        self._task = task
+
+    def __call__(self, sender, **kwargs):
+        instance = kwargs.pop("instance")
+        if instance.pk == self._task.pk:
+            self._checkbox.set_active(instance.complete)
 
 # See tasks_lib.Window.py for more details about how this class works
 class TasksWindow(Window):
@@ -30,7 +48,8 @@ class TasksWindow(Window):
 
         self._last_filter = None
         self._selected_task_box = None
-
+        self._new_task = None
+        
         self.AboutDialog = AboutTasksDialog
         self.PreferencesDialog = PreferencesTasksDialog
         self.NewTaskDialog = NewTaskDialog
@@ -44,6 +63,7 @@ class TasksWindow(Window):
         self._show_task_details(None)
         
         self.ui.sorting_combo.set_active(0)
+                
 
     def _initialize_django(self):
         #FIXME: initialize tables
@@ -84,14 +104,24 @@ class TasksWindow(Window):
             self.ui.task_details_alignment.add(label)
         else:             
             #Display the task details
-            vbox = Gtk.VBox()
-            
-        
+            details_eb = TaskDetailsPane(task, self)                        
+
+            details_eb.get_header().connect("button-press-event", self._show_tag_selection, task)
+
+            details_eb.get_checkmark().connect("toggled", self.task_completed_button_cb, task)
+            details_eb.get_checkmark().sync_with_task = sync_checkbox_to_task_complete(details_eb.get_checkmark(), task)
+            post_save.connect(details_eb.get_checkmark().sync_with_task, sender=Task)
+                    
+            self.ui.task_details_alignment.add(details_eb)
+                    
         self.ui.task_details_alignment.show_all()
+                   
+    def _show_tag_selection(self, task):
+        assert False
             
-        
     def _display_tasks(self, queryset):
         logging.debug("Redisplaying tasks")
+        self._show_task_details(None)
         
         child = self.ui.task_list_alignment.get_child()
         if child:
@@ -111,7 +141,7 @@ class TasksWindow(Window):
         #If this particular filter has no tasks, display a different message
         if not queryset.exists():
             label = Gtk.Label()
-            label.set_markup("<span foreground=\"grey\">No tasks found :) </span>")
+            label.set_markup("<span foreground=\"grey\">No tasks found </span>")
             
             label.set_justify(Gtk.Justification.CENTER)
             
@@ -124,31 +154,36 @@ class TasksWindow(Window):
         task_box = Gtk.VBox()                
         for task in queryset.all():
             event_box = Gtk.EventBox() 
+            event_box.set_border_width(1)
             
             hbox = Gtk.HBox()
+            
+            label_eb = Gtk.EventBox()
             label = Gtk.Label()
-            label.set_markup("<b>" + task.summary + "</b>")            
+            label.set_markup("<b>" + task.summary + "</b>")          
+            label.set_line_wrap(True)  
+            label_eb.add(label)
             
-            event_box.add_events(Gdk.EventMask.BUTTON_PRESS_MASK | Gdk.EventMask.POINTER_MOTION_MASK)
-            event_box.connect("button-press-event", self.task_summary_clicked_cb, task)
+            label_eb.add_events(Gdk.EventMask.BUTTON_PRESS_MASK | Gdk.EventMask.POINTER_MOTION_MASK)
+            label_eb.connect("button-press-event", self.task_summary_clicked_cb, task, event_box)
+            label_eb.set_visible_window(False)
+
+            if self._new_task and self._new_task == task:
+                self._new_task = None
+                self.task_summary_clicked_cb(None, None, task, event_box)
+
+            checkbox = ImageToggle(UNCHECKED_IMAGE, CHECKED_IMAGE)
+            checkbox.set_active(task.complete)
+            checkbox.connect("toggled", self.task_completed_button_cb, task)            
             
-            
-            if task.complete:
-                #FIXME: Bad relative paths
-                check_image = "./data/media/checked.png"
-            else:
-                check_image = "./data/media/unchecked.png"
-            
-            try:
-                pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_size(check_image, 48, 48)
-                image = Gtk.Image.new_from_pixbuf(pixbuf)
-            except:
-                #FIXME: need to deal with this properly
-                image = Gtk.Image()
-                image.set_size_request(48, 48)
+            #This is some crazy magic! Create a handler that stores the checkbox and task
+            #then assign it to a property of the checkbox (just so it stays alive for the life
+            #time of the checkbox. Then connect it to django's post_save
+            checkbox.sync_with_task = sync_checkbox_to_task_complete(checkbox, task)
+            post_save.connect(checkbox.sync_with_task, sender=Task)
                         
-            hbox.pack_start(image, 0, True, False)
-            hbox.pack_start(label, 0, True, False)            
+            hbox.pack_start(checkbox, 0, True, False)
+            hbox.pack_start(label_eb, 0, True, False)            
             event_box.add(hbox)
             task_box.pack_start(event_box, 0, True, False)
 
@@ -197,7 +232,7 @@ class TasksWindow(Window):
         if not summary:
             show_alert("You must enter some text to add a task")
         else:
-            Task.objects.create(
+            self._new_task = Task.objects.create(
                 summary=summary
             )
             self.ui.new_task_box.set_text("")
@@ -214,7 +249,7 @@ class TasksWindow(Window):
         
     def all_tasks_button_toggled_cb(self, obj):
         if obj.get_active():
-            self._display_tasks(Task.objects_uncompleted.all())
+            self._display_tasks(Task.objects.all())
 
     def completed_button_toggled_cb(self, obj):
         if obj.get_active():
@@ -232,7 +267,7 @@ class TasksWindow(Window):
         if obj.get_active():
             self._display_tasks(Task.objects_overdue.all())                                
 
-    def task_summary_clicked_cb(self, obj, event, data):
+    def task_summary_clicked_cb(self, obj, event, data, row_event_box):
         if self._selected_task_box:
             self._selected_task_box.override_background_color(Gtk.StateType.NORMAL, None)
     
@@ -241,6 +276,13 @@ class TasksWindow(Window):
         style_context = self.get_style_context()
         colour = style_context.lookup_color("selected_bg_color")[1]
         
-        obj.override_background_color(Gtk.StateType.NORMAL, colour)
-        self._selected_task_box = obj
+        row_event_box.override_background_color(Gtk.StateType.NORMAL, colour)
+        self._selected_task_box = row_event_box
+        
+    def task_completed_button_cb(self, obj, event, task):
+        task.complete = not task.complete
+        task.save()
+        self._update_uncompleted_count()
+
+
         
