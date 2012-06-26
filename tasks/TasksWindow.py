@@ -15,7 +15,8 @@ from tasks_lib import Window
 from tasks.AboutTasksDialog import AboutTasksDialog
 from tasks.PreferencesTasksDialog import PreferencesTasksDialog
 from tasks.NewTaskDialog import NewTaskDialog
-from tasks.models import Task, Tag
+
+from tasks.store import Task
 
 from .image_toggle import ImageToggle
 from .task_details_pane import TaskDetailsPane
@@ -25,8 +26,6 @@ import ConfigParser
 
 UNCHECKED_IMAGE = "./data/media/unchecked.svg"
 CHECKED_IMAGE = "./data/media/checked.svg"
-
-from django.db.models.signals import post_save
 
 from tasks.store import Store
 
@@ -55,11 +54,10 @@ class TasksWindow(Window):
         self.PreferencesDialog = PreferencesTasksDialog
         self.NewTaskDialog = NewTaskDialog
  
- #       self._store = Store()
- #       self._store.register_model(Task)
+        self._store = Store()
+        self._store.register_model(Task)
  
         # Code for other initialization actions should be added here.
-        self._initialize_django()
         self._locate_and_update_user_image()
         #FIXME: Find the user's first name (or fallback to the unix login)
         self._start_task_loading()
@@ -67,12 +65,6 @@ class TasksWindow(Window):
         self._show_task_details(None)
         
         self.ui.sorting_combo.set_active(0)
-                
-
-    def _initialize_django(self):
-        #FIXME: initialize tables
-        from django.core.management import call_command
-        call_command("syncdb")
 
     def _locate_and_update_user_image(self):
         import getpass
@@ -108,7 +100,7 @@ class TasksWindow(Window):
             label.set_markup('<span foreground="grey"><b>No task selected</b></span>')
             self.ui.task_details_alignment.add(label)
         else:   
-            task = Task.objects.get(pk=task.pk) #Reload
+            task = self._store.get(task.pk)
                       
             #Display the task details
             details_eb = TaskDetailsPane(task, self)                        
