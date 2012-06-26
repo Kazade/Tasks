@@ -1,0 +1,417 @@
+=============
+SQLite Schema
+=============
+
+This is a discussion about how we can lay out the SQLite database to hold the
+documents that we store. There are a few alternatives, and we still need some
+benchmarking, etc, to decide among them.
+
+
+.. contents::
+
+
+Indexing
+========
+
+We want to have a way for users to define custom indexes on their documents.
+So that they can, for example, find all users named John in their address book.
+The question then becomes how we want to implement these indexes. At a high
+level, the index creation API looks like::
+
+    CREATE_INDEX(db, index_name, index_expressions)
+
+The naming is to give a handle for the index (possibly to only allow you to
+query off of a specific index name). The expressions are the interesting part.
+It is intended to be a list of fields, and possibly mappings on those fields.
+Something like::
+
+    CREATE_INDEX(mydb, "myindex", ["field", "other.subfield", "number(third)"]) 
+
+
+Recommended Implementation
+--------------------------
+
+One option is to create a ``document_fields`` table, which tracks specific
+document fields. Something of the form::
+
+    CREATE TABLE document_fields (
+        doc_id TEXT,
+        field_name TEXT,
+        value TEXT,
+    );
+
+So if you had two documents of the form::
+
+    {"lastname": "meinel", "firstname": "john"}
+    {"lastname": "pedroni", "firstname": "samuele"}
+
+With an index on lastname and firstname, you would end up with the entries::
+
+    doc_id  field_name  value
+    doc-1   lastname    meinel
+    doc-1   firstname   john
+    doc-2   lastname    pedroni
+    doc-2   firstname   samuele
+
+Then when you match an index query, you join that table against itself. You can
+only query for one key combination per SQL query. Eg::
+
+    create_index('name', ('lastname', 'firstname'))
+    get_from_index('name', [('meinel', 'john'), ('pedroni', 'samuele')])
+
+Becomes::
+
+     SELECT d.doc_id, d.doc_rev, d.doc
+       FROM document d, document_fields d0, document_fields d1
+      WHERE d.doc_id = d0.doc_id
+            AND d0.field_name = 'lastname'
+            AND d0.value = 'meinel'
+            AND d.doc_id = d1.doc_id
+            AND d1.field_name = 'firstname'
+            AND d1.value = 'john';
+     SELECT d.doc_id, d.doc_rev, d.doc
+       FROM document d, document_fields d0, document_fields d1
+      WHERE d.doc_id = d0.doc_id
+            AND d0.field_name = 'lastname'
+            AND d0.value = 'pedroni'
+            AND d.doc_id = d1.doc_id
+            AND d1.field_name = 'firstname'
+            AND d1.value = 'samuele';
+
+Note it is not possible to cheat and try to query for both index matches in one
+request. This is because you could have the document::
+
+    {"lastname": "pedroni", "firstname": "john"}
+
+Which should not match the above query. 
+
+We also want an SQL index on this table, something like [#]_::
+
+    CREATE INDEX document_fields_field_value_idx
+           ON document_fields (field_name, value, doc_id);
+
+
+.. [#] Another possible index would have been::
+
+            CREATE INDEX document_fields_field_value
+                   ON document_fields (field_name, value);
+
+   SQLite is capable of using an index as long as you use the early columns.
+   The main advantage of putting ``doc_id`` into the index is that SQLite
+   doesn't have to do another btree search to find the ``doc_id`` in the
+   original row. The time to get 47k docs from an index goes from 0.8s to 1.2s
+   with the extra lookup. The penalty is that the size from 57MB to 58MB.
+
+   Testing with this layout shows that SQLITE is tending to use the index for
+   properly culling based on the fisrt document field, but then joins against
+   document immediately, rather than culling further with more index queries on
+   document_fields. It would be possible to force a join order with "CROSS
+   JOIN".
+
+   SQLite's document about its query planner:
+   http://www.sqlite.org/optoverview.html
+
+
+Note that only fields which are indexed are put into the ``document_fields``
+table. This is because we expect most databases will not have an index on every
+field in all the documents. Also, this works more naturally when dealing with
+transformations (eg. lower()), because we can't predict ahead of time what
+transformations the user would want.
+
+Discussion
+~~~~~~~~~~
+
+
+1) We don't have a way to query for multiple keys concurrently. It
+   seems a shame to have to do a loop in the caller.
+
+2) Joining the table against itself to get "AND" semantics is a bit
+   ugly. It would be possible to change the loop slicing, and look
+   for all doc_ids with lastname 'pedroni' or 'meinel' before checking
+   for all doc_ids with firstname 'john' or 'samuele'. You would need to
+   somehow handle filtering out "pedroni, john".
+
+3) It isn't hard to map nested fields into this structure. And you have
+   the nice property that you don't have to change the data to add/remove an
+   index.
+   
+4) It isn't 100% clear how we handle mapped fields in this structure. Something
+   like ``lower(lastname)``. It is possible that we could only support the set
+   of mappings that we can do with SQL on the live data. However, that will
+   mean we probably get O(N) performance rather than O(log N) from the indexes.
+   (Specifically, sqlite has to apply the mapping to every row to see if that
+   mapping results in something that would match, versus a strict text
+   matching.)
+
+5) We probably get decent results for prefix matches. However, SQLite doesn't
+   seem to support turning "SELECT * FROM table WHERE value LIKE 'p%'" into an
+   index query. Even though value is in a btree, it doesn't use it. However,
+   you could use >= and < to get a range query. Something like::
+   
+        SELECT * FROM table WHERE value >= 'p' AND value < 'q'
+
+   Since sqlite supports closed and open ended ranges, we don't have to play
+   tricks with ZZZ values.
+
+   Further note, SQL defines LIKE to be case-insensitive by default. If we
+   change it with ``PRAGMA case_sensitive_like=ON``, then the "LIKE 'p%'"
+   version of the query does get turned into an index query.
+
+6) ``ORDER BY`` seems unclear for these queries, but it isn't well defined by
+   the API spec, either.
+
+
+Alternative Implementations
+---------------------------
+
+Expand All Fields
+-----------------
+
+The same schema as defined above, except you always put every field into the
+document_fields table. 
+
+Discussion
+~~~~~~~~~~
+
+1) The main benefit is that CREATE_INDEX can be very cheap,
+   since all the fields are already put in the indexing table. However, for
+   transformations (eg. lower()) you would still have to extract every document
+   and recompute the index value. So it isn't a big win, and it increases the
+   size of the database significantly.
+
+
+
+Only Expanded Fields
+--------------------
+
+Similar to `Expand All Fields`_, except you no longer store the `doc` column in
+the original ``document`` table. This avoids storing data redundantly, with the
+expense that to get a single document you have to piece it together from lots
+of separate rows.
+
+Discussion
+~~~~~~~~~~
+
+1) This turned out to only save a small amount of disk space vs `Expand All
+   Fields`_ and had a very large overhead for extracting all documents. (18s to
+   get all vs <1s for `Expand All Fields`_.)
+
+
+Table per index
+---------------
+
+It would be possible to create a table at ``create_index`` time.
+
+Something like::
+
+    create_index('name', ('lastname', 'firstname'))
+
+Gets mapped into::
+
+    CREATE TABLE idx_name (doc_id PRIMARY KEY, col1 TEXT, col2 TEXT)
+    CREATE INDEX idx_name_idx ON idx_name(col1, col2)
+    INSERT INTO idx_name VALUES ("xxx", "meinel", "john")
+    INSERT INTO idx_name VALUES ("yyy", "pedroni", "samuele")
+
+The nice thing is that you get a real SQL btree index over just the contents
+you care about. And then::
+
+    get_from_index('name', [('meinel', 'john'), ('pedroni', 'samuele')])
+
+Is mapped into::
+
+    SELECT d.doc_id, d.doc_rev, d.doc
+      FROM document d, idx_name
+     WHERE (value1 = 'meinel' AND value2 = 'john')
+        OR (value1 = 'pedroni' AND value2 = 'samuele');
+
+It might be just as efficient to just loop and do a simpler WHERE clause.
+
+Discussion
+~~~~~~~~~~
+
+1) Needs benchmarking, but is likely to be faster to do queries. Any given
+   index has all of its data localized, and split out from other data.
+
+2) The index we create perfectly supports the prefix searching we want to
+   support.
+
+3) ``put_doc`` needs to update every index table. So inserting a new document
+   becomes O(num_indexes).
+
+4) Data isn't shared between indexes. I imagine on-disk size will probably be
+   bigger.
+
+5) Has not been implemented yet to compare with the recommended method.
+
+
+Document Tables
+---------------
+
+We could create an arbitrarily-wide document table, that stored each field as a
+separate column. Creating an index then creates the associated SQL index across
+those fields.
+
+Discussion
+~~~~~~~~~~
+
+1) The main issue is that inserting a new document can potentially add all new
+   fields. Which means you have to do something like "ALTER TABLE ADD COLUMN".
+   And then all the documents that don't have that field just get a NULL entry
+   there.
+
+2) The good is that it is roughly how SQL wants to act (caveat the data isn't
+   normalized.) Documents themselves are stored only one time, and you don't do
+   extra work to maintain the indexes.
+
+
+Mapped Index Table
+------------------
+
+Instead of having a ``document_fields`` table, we instead have a index table.
+Sort of the idea we had for cassandra. You then apply a mapping function to the
+data, and use the result as your values. For example::
+
+    CREATE TABLE indexed_data AS (
+        index_name TEXT,
+        mapped_value TEXT,
+        doc_id TEXT,
+        CONSTRAINT indexed_data_pkey PRIMARY KEY (index_name, mapped_value)
+    );
+    INSERT INTO indexed_data VALUES ('name', 'meinel\x01john', 'doc1')
+    INSERT INTO indexed_data VALUES ('name', 'pedroni\x01samuele', 'doc2')
+
+    SELECT d.doc_id, d.doc_rev, d.doc
+      FROM indexed_data i, documents d
+     WHERE i.doc_id = d.doc_id
+       AND i.index_name = 'name'
+       AND i.mapped_value = 'meinel\x01john';
+
+Or even::
+
+     AND i.mapped_value IN ('meinel\x01john', 'pedroni\x01samuele')
+
+Discussion
+~~~~~~~~~~
+
+1) Overall, closer in theory to `Table Per Index`_ than `Expanded Fields`_.
+   ``put_doc`` is also O(indexes), and you store the actual content multiple
+   times.
+2) You need delimiters that are safe. This should actually be fine if we assume
+   the documents are JSON, since the text representation of JSON can't have
+   control characters, etc.
+
+3) We can still do prefix lookups on the data, though we have to take a bit
+   more care in how we map things.
+
+4) It is easier to write the multi-entry request form.
+
+
+Benchmarks
+----------
+
+
+`Expanded Fields`_, `Partial Expanded Fields`_, and `Only Expanded Fields`_
+were all implemented, and then benchmarked relative to the pure in-memory
+database (using python dicts, etc). A database of 50k records containing
+various music metadata was used as the data source. In JSON form, this amounts
+to approximately 33MB of records.
+
+
+Import Time
+~~~~~~~~~~~
+
+The first step is how long it takes to import all of the records into the
+database.
+
+    ========= ===========   ============    =====
+    method    import time   import rec/s    size
+    ========= ===========   ============    =====
+    mem       0.716s        70,536          ?
+    expand    201s          248.6           137MB
+    *partial* *130s*        *384.2*         *52MB*
+    only-exp  190s          262.8           91MB
+    ========= ===========   ============    =====
+
+Basically, `Only Expanded Fields`_ suffers a bit from bloat. Probably caused by
+indexing the values. `Expanded Fields`_ then duplicates the data on top of the
+indexed fields.
+
+To make the ``document_fields`` table more useful, I added an extra index on it
+over ``(field_name, value, doc_id)``. This slowed the import time
+significantly, and increased the disk size for expand and only-expand.
+
+    ========= ===========   ============    =====
+    method    import time   import rec/s    size
+    ========= ===========   ============    =====
+    expand    506s          98.8            195MB
+    only-exp  562s          88.9            149MB
+    ========= ===========   ============    =====
+
+
+Create Index Time
+~~~~~~~~~~~~~~~~~
+
+The time to create a new index on this data is also fairly important. it isn't
+expected that lots and lots of indexes will be created, but it is expected that
+it will be done occasionally.
+
+    ========= ===========   ============    =====
+    method    create time   final size      delta
+    ========= ===========   ============    =====
+    mem       0.966s
+    expand    0.007s        195MB           0MB
+    partial   3.758s         58MB           6MB
+    only-exp  0.005s        149MB           0MB
+    ========= ===========   ============    =====
+
+In the case of the Expanded and OnlyExpanded, creating an index is pretty much
+just inserting the definition of the index, since each field is already
+indexed.
+
+The pure-memory version has to decode all the documents (roughly 800ms), and
+then build up the value representation. The `Partial Expanded Fields`_ has to
+extract all of the content back out of the database, and do the same work,
+inserting the new fields back into the database.
+
+Note that the implementation for `Partial Expanded Fields`_ is smart enough
+that it doesn't index fields that are already indexed, so if you were to do
+something like::
+
+    create_index('name', ('lastname', 'firstname')) takes 3s
+    create_index('lastname', ('lastname',))         takes 0s
+    create_index('firstname', ('firstname',))       takes 0s
+
+The second two would be a no-op. However, the api doesn't allow you to create
+multiple indexes in one pass, so the order now has an effect::
+
+    create_index('lastname', ('lastname',))         takes 3s
+    create_index('firstname', ('firstname',))       takes 3s
+    create_index('name', ('lastname', 'firstname')) takes 0s
+
+
+Extract Content Time
+~~~~~~~~~~~~~~~~~~~~
+
+Now some comparisons for how long it takes to extract documents from the
+database. We timed a loop that extracted every document from the database,
+one-at-a-time by calling ``get_doc()``. This also has the overhead of checking
+if a given document has conflicts, etc. All currently implementations also
+support ``_get_doc()`` which extracts the content without checking for
+conflicts. Further, `Partial Expanded Fields`_ internally has a
+``_iter_all_docs`` method that it uses when it wants to update the index data.
+This simply streams out the document content, as quickly as SQLite can produce
+it.
+
+    ========= ===========   ============    =========
+    method    get_doc()     _get_doc()      _iter_all
+    ========= ===========   ============    =========
+    mem        0.251         0.152
+    expand     4.903         2.888
+    partial    5.392         3.112          0.559
+    only-exp  17.630        15.333
+    ========= ===========   ============    =========
+
+The overhead of doing one-at-a-time lookup is significant (about 5x slower).
+The overhead of checking for conflicts is also significant. It might be
+possible to combine the SQL check.

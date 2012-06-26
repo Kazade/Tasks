@@ -55,7 +55,11 @@ class Task(models.Model):
     archived = models.BooleanField(default=False)
     importance = models.CharField(max_length=64, choices=POSSIBLE_IMPORTANCE_CHOICES, default="NORMAL")
     summary = models.CharField(max_length=512)    
+    
     due_date = models.DateField(null=True)
+    due_time = models.TimeField(null=True)
+    
+    details = models.TextField()
     
     tags = models.ManyToManyField(Tag)
     

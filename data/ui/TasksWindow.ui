@@ -138,8 +138,8 @@
                                 <property name="use_action_appearance">False</property>
                                 <property name="relief">none</property>
                                 <property name="xalign">0.5</property>
-                                <property name="active">True</property>
                                 <property name="draw_indicator">False</property>
+                                <property name="group">active_button</property>
                                 <signal name="toggled" handler="all_tasks_button_toggled_cb" swapped="no"/>
                               </object>
                               <packing>
@@ -149,8 +149,8 @@
                               </packing>
                             </child>
                             <child>
-                              <object class="GtkRadioButton" id="completed_button">
-                                <property name="label" translatable="yes">Completed</property>
+                              <object class="GtkRadioButton" id="active_button">
+                                <property name="label" translatable="yes">Active</property>
                                 <property name="use_action_appearance">False</property>
                                 <property name="visible">True</property>
                                 <property name="can_focus">True</property>
@@ -160,8 +160,7 @@
                                 <property name="xalign">0.5</property>
                                 <property name="active">True</property>
                                 <property name="draw_indicator">False</property>
-                                <property name="group">all_tasks_button</property>
-                                <signal name="toggled" handler="completed_button_toggled_cb" swapped="no"/>
+                                <signal name="toggled" handler="active_button_toggled_cb" swapped="no"/>
                               </object>
                               <packing>
                                 <property name="expand">False</property>
@@ -181,7 +180,7 @@
                                 <property name="xalign">0.5</property>
                                 <property name="active">True</property>
                                 <property name="draw_indicator">False</property>
-                                <property name="group">all_tasks_button</property>
+                                <property name="group">active_button</property>
                                 <signal name="toggled" handler="important_button_toggled_cb" swapped="no"/>
                               </object>
                               <packing>
@@ -202,7 +201,7 @@
                                 <property name="xalign">0.5</property>
                                 <property name="active">True</property>
                                 <property name="draw_indicator">False</property>
-                                <property name="group">all_tasks_button</property>
+                                <property name="group">active_button</property>
                                 <signal name="toggled" handler="due_today_button_toggled_cb" swapped="no"/>
                               </object>
                               <packing>
@@ -223,13 +222,33 @@
                                 <property name="xalign">0.5</property>
                                 <property name="active">True</property>
                                 <property name="draw_indicator">False</property>
-                                <property name="group">all_tasks_button</property>
+                                <property name="group">active_button</property>
                                 <signal name="toggled" handler="overdue_button_toggled_cb" swapped="no"/>
                               </object>
                               <packing>
                                 <property name="expand">False</property>
                                 <property name="fill">True</property>
                                 <property name="position">4</property>
+                              </packing>
+                            </child>
+                            <child>
+                              <object class="GtkRadioButton" id="completed_button">
+                                <property name="label" translatable="yes">Completed</property>
+                                <property name="use_action_appearance">False</property>
+                                <property name="visible">True</property>
+                                <property name="can_focus">True</property>
+                                <property name="receives_default">False</property>
+                                <property name="use_action_appearance">False</property>
+                                <property name="relief">none</property>
+                                <property name="xalign">0.5</property>
+                                <property name="draw_indicator">False</property>
+                                <property name="group">active_button</property>
+                                <signal name="toggled" handler="completed_button_toggled_cb" swapped="no"/>
+                              </object>
+                              <packing>
+                                <property name="expand">False</property>
+                                <property name="fill">True</property>
+                                <property name="position">5</property>
                               </packing>
                             </child>
                           </object>
@@ -324,8 +343,8 @@
                             <property name="events">GDK_KEY_PRESS_MASK | GDK_STRUCTURE_MASK</property>
                             <property name="margin_right">5</property>
                             <property name="invisible_char">•</property>
-                            <property name="shadow_type">out</property>
                             <property name="invisible_char_set">True</property>
+                            <property name="caps_lock_warning">False</property>
                             <property name="placeholder_text">Type here to create a task...</property>
                             <signal name="key-press-event" handler="new_task_box_key_press_event_cb" swapped="no"/>
                           </object>

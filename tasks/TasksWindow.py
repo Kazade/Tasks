@@ -28,6 +28,8 @@ CHECKED_IMAGE = "./data/media/checked.svg"
 
 from django.db.models.signals import post_save
 
+from tasks.store import Store
+
 class sync_checkbox_to_task_complete(object):
     def __init__(self, checkbox, task):
         self._checkbox = checkbox
@@ -48,11 +50,13 @@ class TasksWindow(Window):
 
         self._last_filter = None
         self._selected_task_box = None
-        self._new_task = None
         
         self.AboutDialog = AboutTasksDialog
         self.PreferencesDialog = PreferencesTasksDialog
         self.NewTaskDialog = NewTaskDialog
+ 
+ #       self._store = Store()
+ #       self._store.register_model(Task)
  
         # Code for other initialization actions should be added here.
         self._initialize_django()
@@ -89,7 +93,7 @@ class TasksWindow(Window):
         self.ui.user_image.set_from_pixbuf(pixbuf)
                 
     def _start_task_loading(self):
-        self.all_tasks_button_toggled_cb(self.ui.all_tasks_button)
+        self.active_button_toggled_cb(self.ui.active_button)
         self._update_uncompleted_count()
         
     def _show_task_details(self, task):
@@ -97,12 +101,15 @@ class TasksWindow(Window):
         if child:
             self.ui.task_details_alignment.remove(child)    
             
+        details_eb = None
         if task is None:
             #Just show there is no task selected
             label = Gtk.Label()
             label.set_markup('<span foreground="grey"><b>No task selected</b></span>')
             self.ui.task_details_alignment.add(label)
-        else:             
+        else:   
+            task = Task.objects.get(pk=task.pk) #Reload
+                      
             #Display the task details
             details_eb = TaskDetailsPane(task, self)                        
 
@@ -111,15 +118,18 @@ class TasksWindow(Window):
             details_eb.get_checkmark().connect("toggled", self.task_completed_button_cb, task)
             details_eb.get_checkmark().sync_with_task = sync_checkbox_to_task_complete(details_eb.get_checkmark(), task)
             post_save.connect(details_eb.get_checkmark().sync_with_task, sender=Task)
-                    
+
+            details_eb.connect("save-requested", self.task_details_saved_cb)
             self.ui.task_details_alignment.add(details_eb)
                     
         self.ui.task_details_alignment.show_all()
+        if details_eb:
+            details_eb.hide_summary_edit() #Ugly, we shouldn't need to do this here
                    
     def _show_tag_selection(self, task):
         assert False
             
-    def _display_tasks(self, queryset):
+    def _display_tasks(self, queryset, focused_task=None):
         logging.debug("Redisplaying tasks")
         self._show_task_details(None)
         
@@ -159,22 +169,25 @@ class TasksWindow(Window):
             hbox = Gtk.HBox()
             
             label_eb = Gtk.EventBox()
+            
             label = Gtk.Label()
             label.set_markup("<b>" + task.summary + "</b>")          
             label.set_line_wrap(True)  
+            label.set_justify(Gtk.Justification.LEFT)
+            label.set_halign(0.0)
             label_eb.add(label)
             
             label_eb.add_events(Gdk.EventMask.BUTTON_PRESS_MASK | Gdk.EventMask.POINTER_MOTION_MASK)
             label_eb.connect("button-press-event", self.task_summary_clicked_cb, task, event_box)
             label_eb.set_visible_window(False)
 
-            if self._new_task and self._new_task == task:
-                self._new_task = None
+            if focused_task and focused_task == task.pk:
                 self.task_summary_clicked_cb(None, None, task, event_box)
 
             checkbox = ImageToggle(UNCHECKED_IMAGE, CHECKED_IMAGE)
             checkbox.set_active(task.complete)
             checkbox.connect("toggled", self.task_completed_button_cb, task)            
+            checkbox.set_size_request(48, 48)
             
             #This is some crazy magic! Create a handler that stores the checkbox and task
             #then assign it to a property of the checkbox (just so it stays alive for the life
@@ -182,8 +195,8 @@ class TasksWindow(Window):
             checkbox.sync_with_task = sync_checkbox_to_task_complete(checkbox, task)
             post_save.connect(checkbox.sync_with_task, sender=Task)
                         
-            hbox.pack_start(checkbox, 0, True, False)
-            hbox.pack_start(label_eb, 0, True, False)            
+            hbox.pack_start(checkbox, 0, False, False)
+            hbox.pack_start(label_eb, 0, True, False)                        
             event_box.add(hbox)
             task_box.pack_start(event_box, 0, True, False)
 
@@ -232,15 +245,15 @@ class TasksWindow(Window):
         if not summary:
             show_alert("You must enter some text to add a task")
         else:
-            self._new_task = Task.objects.create(
+            new_task = Task.objects.create(
                 summary=summary
             )
             self.ui.new_task_box.set_text("")
             if self._last_filter:
-                self._display_tasks(self._last_filter)
+                self._display_tasks(self._last_filter, focused_task=new_task.pk)
             else:
-                self._display_tasks(Task.objects_uncompleted.all())
-            self._update_uncompleted_count()                
+                self._display_tasks(Task.objects_uncompleted.all(), focused_task=new_task.pk)
+            self._update_uncompleted_count()                            
 
     def new_task_box_key_press_event_cb(self, obj, event):
         keyname = Gdk.keyval_name(event.keyval)
@@ -250,6 +263,10 @@ class TasksWindow(Window):
     def all_tasks_button_toggled_cb(self, obj):
         if obj.get_active():
             self._display_tasks(Task.objects.all())
+    
+    def active_button_toggled_cb(self, obj):
+        if obj.get_active():
+            self._display_tasks(Task.objects_uncompleted.all())    
 
     def completed_button_toggled_cb(self, obj):
         if obj.get_active():
@@ -280,9 +297,20 @@ class TasksWindow(Window):
         self._selected_task_box = row_event_box
         
     def task_completed_button_cb(self, obj, event, task):
+        task = Task.objects.get(pk=task.pk) #Reload                
         task.complete = not task.complete
         task.save()
         self._update_uncompleted_count()
+        
+        #FIXME: self._refresh_task_in_list(task.pk)
+        #self._display_tasks(self._last_filter)
 
-
+    def task_details_saved_cb(self, widget, task):
+        print "Saving task: " + task.details
+        task.save()
+        self._update_uncompleted_count()
+        
+        #FIXME: self._refresh_task_in_list
+        #self._display_tasks(self._last_filter, focused_task=task.pk)
+        
         
