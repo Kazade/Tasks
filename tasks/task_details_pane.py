@@ -1,9 +1,10 @@
 import time
+import datetime
 
 from gi.repository import Gtk, Gdk, GObject
 
 from .image_toggle import ImageToggle
-from .models import Task
+from .store import Task
 
 class TaskDetailsPane(Gtk.EventBox):
     __gtype_name__ = "TaskDetailsPane"
@@ -16,7 +17,6 @@ class TaskDetailsPane(Gtk.EventBox):
         super(TaskDetailsPane, self).__init__(*args, **kwargs)
 
         self._task = task        
-        self._save_signal = None
         self._time_checkbox = None
         self._hour_spinbutton = None
         self._minute_spinbutton = None
@@ -27,19 +27,13 @@ class TaskDetailsPane(Gtk.EventBox):
         self._summary_label_eb.set_visible(True)
 
     def notes_changed_callback(self, widget):    
-        #If a save signal is already queued, then stop it
-        if self._save_signal:
-            GObject.source_remove(self._save_signal)
-            self._save_signal = None
-
         self._task.details = self._notes_box.get_buffer().get_text(
             self._notes_box.get_buffer().get_start_iter(),
             self._notes_box.get_buffer().get_end_iter(),
             True
-        )
+        ).decode("utf-8")
         
-        #Set the save signal to fire after a second            
-        self._save_signal = GObject.timeout_add(150, self.emit, "save-requested", self._task)
+        self._task.save()
  
     def get_checkmark(self):
         return self._checkmark
@@ -59,8 +53,8 @@ class TaskDetailsPane(Gtk.EventBox):
         
         if keyname == "Return" or keyname == "Escape":
             if keyname == "Return":
-                self._task.summary = self._summary_edit.get_text()
-                self.emit("save-requested", self._task) #Emit a save request
+                self._task.summary = self._summary_edit.get_text().decode("utf-8")
+                self._task.save()
                 self._summary_label.set_markup("<b>" + self._task.summary + "</b>")
                     
             self._summary_label_eb.set_visible(True)
@@ -80,22 +74,22 @@ class TaskDetailsPane(Gtk.EventBox):
         if obj.get_active():
             hours = int(self._hour_spinbutton.get_value())
             minutes = int(self._minute_spinbutton.get_value())
-            self._task.due_time = "%d:%d:00" % (hours, minutes)
+            self._task.due_time = datetime.datetime.strptime("%d:%d:00" % (hours, minutes), "%H:%M:%S")
         else:
             self._task.due_time = None
             
-        self.emit("save-requested", self._task)
+        self._task.save()
 
     def due_date_changed_cb(self, calendar):
-        self._task.due_date = "%d-%d-%d" % calendar.get_date()
-        self.emit("save-requested", self._task)
+        self._task.due_date = datetime.date(*calendar.get_date())
+        self._task.save()
     
     def due_time_changed_cb(self, spinbutton):
         if self._hour_spinbutton and self._minute_spinbutton:
             hours = int(self._hour_spinbutton.get_value())
             minutes = int(self._minute_spinbutton.get_value())
-            self._task.due_time = "%d:%d:00" % (hours, minutes)        
-            self.emit("save-requested", self._task)
+            self._task.due_time = datetime.datetime.strptime("%d:%d:00" % (hours, minutes), "%H:%M:%S")
+            self._task.save()
     
     def schedule_enabled_toggled_cb(self, obj):
         self._schedule_calendar.set_sensitive(obj.get_active())
@@ -103,19 +97,23 @@ class TaskDetailsPane(Gtk.EventBox):
             self._time_checkbox.set_sensitive(obj.get_active())
     
         if obj.get_active():
-            self._task.due_date = "%d-%d-%d" % self._schedule_calendar.get_date()
+            self._task.due_date = datetime.date(*self._schedule_calendar.get_date())
             
             #If the time checkbox is active, then we must restore the time from there
             #so that unchecking and rechecking "set a deadline" works as you'd expect
             if self._time_checkbox and self._time_checkbox.get_active():
                 hours = int(self._hour_spinbutton.get_value())
                 minutes = int(self._minute_spinbutton.get_value())
-                self._task.due_time = "%d:%d:00" % (hours, minutes)
+                self._task.due_time = datetime.datetime.strptime("%d:%d:00" % (hours, minutes), "%H:%M:%S")
         else:
             self._task.due_date = None
             self._task.due_time = None
             
-        self.emit("save-requested", self._task)
+        self._task.save()
+    
+    def checkmark_toggled_cb(self, obj, event):
+        self._task.complete = obj.get_active()
+        self._task.save()
     
     def _initialize_widgets(self, task, window):
         from .TasksWindow import UNCHECKED_IMAGE, CHECKED_IMAGE
@@ -136,6 +134,7 @@ class TaskDetailsPane(Gtk.EventBox):
         header_hbox = Gtk.HBox()
         self._checkmark = ImageToggle(UNCHECKED_IMAGE, CHECKED_IMAGE)
         self._checkmark.set_active(task.complete)
+        self._checkmark.connect("toggled", self.checkmark_toggled_cb)
         header_hbox.pack_start(self._checkmark, 0, False, False)
         
         header_hbox.set_margin_top(10)
@@ -162,7 +161,7 @@ class TaskDetailsPane(Gtk.EventBox):
         label_and_tags_box.pack_start(self._summary_edit, 0, True, False)
         label_and_tags_box.pack_start(self._summary_label_eb, 0, True, False)
         
-        if task.tags.exists():
+        if False:
             #TODO: List tags
             pass
         else:

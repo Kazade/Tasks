@@ -38,7 +38,10 @@ class ImageToggle(Gtk.EventBox):
         
         self.set_visible_window(False)        
         self.show_all()            
-            
+
+    def get_active(self):
+        return self._checked
+
     def button_pressed_cb(self, obj, event):
         self._checked = not self._checked
         self.set_active(self._checked)

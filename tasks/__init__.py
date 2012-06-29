@@ -10,10 +10,7 @@ from gettext import gettext as _
 gettext.textdomain('tasks')
 
 from gi.repository import Gtk # pylint: disable=E0611
-
-import os
-os.environ["DJANGO_SETTINGS_MODULE"] = "tasks.settings"
-        
+  
 from tasks import TasksWindow
 
 from tasks_lib import set_up_logging, get_version

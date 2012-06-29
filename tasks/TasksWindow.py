@@ -16,10 +16,11 @@ from tasks.AboutTasksDialog import AboutTasksDialog
 from tasks.PreferencesTasksDialog import PreferencesTasksDialog
 from tasks.NewTaskDialog import NewTaskDialog
 
-from tasks.store import Task
+from tasks.store import Task, Store
 
 from .image_toggle import ImageToggle
 from .task_details_pane import TaskDetailsPane
+from .task_list_entry import TaskListEntry
 
 import os
 import ConfigParser
@@ -49,6 +50,8 @@ class TasksWindow(Window):
 
         self._last_filter = None
         self._selected_task_box = None
+        self._task_details_pane = None
+        self._task_entries = {}
         
         self.AboutDialog = AboutTasksDialog
         self.PreferencesDialog = PreferencesTasksDialog
@@ -56,15 +59,18 @@ class TasksWindow(Window):
  
         self._store = Store()
         self._store.register_model(Task)
+        
+        self._store.connect("post-save", self.store_post_save)
  
         # Code for other initialization actions should be added here.
         self._locate_and_update_user_image()
         #FIXME: Find the user's first name (or fallback to the unix login)
         self._start_task_loading()
-        self._update_tags()
+        #self._update_tags()
         self._show_task_details(None)
         
         self.ui.sorting_combo.set_active(0)
+        self.maximize()
 
     def _locate_and_update_user_image(self):
         import getpass
@@ -93,30 +99,22 @@ class TasksWindow(Window):
         if child:
             self.ui.task_details_alignment.remove(child)    
             
-        details_eb = None
+        self._task_details_pane = None
         if task is None:
             #Just show there is no task selected
             label = Gtk.Label()
             label.set_markup('<span foreground="grey"><b>No task selected</b></span>')
             self.ui.task_details_alignment.add(label)
         else:   
-            task = self._store.get(task.pk)
+            task = self._store.get(Task, task.pk)
                       
             #Display the task details
-            details_eb = TaskDetailsPane(task, self)                        
-
-            details_eb.get_header().connect("button-press-event", self._show_tag_selection, task)
-
-            details_eb.get_checkmark().connect("toggled", self.task_completed_button_cb, task)
-            details_eb.get_checkmark().sync_with_task = sync_checkbox_to_task_complete(details_eb.get_checkmark(), task)
-            post_save.connect(details_eb.get_checkmark().sync_with_task, sender=Task)
-
-            details_eb.connect("save-requested", self.task_details_saved_cb)
-            self.ui.task_details_alignment.add(details_eb)
+            self._task_details_pane = TaskDetailsPane(task, self)
+            self.ui.task_details_alignment.add(self._task_details_pane)
                     
         self.ui.task_details_alignment.show_all()
-        if details_eb:
-            details_eb.hide_summary_edit() #Ugly, we shouldn't need to do this here
+        if self._task_details_pane:
+            self._task_details_pane.hide_summary_edit() #Ugly, we shouldn't need to do this here
                    
     def _show_tag_selection(self, task):
         assert False
@@ -141,7 +139,7 @@ class TasksWindow(Window):
             return
         
         #If this particular filter has no tasks, display a different message
-        if not queryset.exists():
+        if not queryset:
             label = Gtk.Label()
             label.set_markup("<span foreground=\"grey\">No tasks found </span>")
             
@@ -153,44 +151,18 @@ class TasksWindow(Window):
         
         self._last_filter = queryset.all()
         
-        task_box = Gtk.VBox()                
+        task_box = Gtk.VBox()   
+        self._task_entries = {}             
         for task in queryset.all():
-            event_box = Gtk.EventBox() 
-            event_box.set_border_width(1)
+            entry = TaskListEntry(task)
             
-            hbox = Gtk.HBox()
+            if task.pk == focused_task:
+                self.task_summary_clicked_cb(None, None, task, entry)
             
-            label_eb = Gtk.EventBox()
-            
-            label = Gtk.Label()
-            label.set_markup("<b>" + task.summary + "</b>")          
-            label.set_line_wrap(True)  
-            label.set_justify(Gtk.Justification.LEFT)
-            label.set_halign(0.0)
-            label_eb.add(label)
-            
-            label_eb.add_events(Gdk.EventMask.BUTTON_PRESS_MASK | Gdk.EventMask.POINTER_MOTION_MASK)
-            label_eb.connect("button-press-event", self.task_summary_clicked_cb, task, event_box)
-            label_eb.set_visible_window(False)
-
-            if focused_task and focused_task == task.pk:
-                self.task_summary_clicked_cb(None, None, task, event_box)
-
-            checkbox = ImageToggle(UNCHECKED_IMAGE, CHECKED_IMAGE)
-            checkbox.set_active(task.complete)
-            checkbox.connect("toggled", self.task_completed_button_cb, task)            
-            checkbox.set_size_request(48, 48)
-            
-            #This is some crazy magic! Create a handler that stores the checkbox and task
-            #then assign it to a property of the checkbox (just so it stays alive for the life
-            #time of the checkbox. Then connect it to django's post_save
-            checkbox.sync_with_task = sync_checkbox_to_task_complete(checkbox, task)
-            post_save.connect(checkbox.sync_with_task, sender=Task)
-                        
-            hbox.pack_start(checkbox, 0, False, False)
-            hbox.pack_start(label_eb, 0, True, False)                        
-            event_box.add(hbox)
-            task_box.pack_start(event_box, 0, True, False)
+            self._task_entries[task.pk] = entry
+            entry.connect("entry-selected", self.task_summary_clicked_cb, task, entry)
+            entry.connect("task-complete-toggled", self.task_completed_button_cb)
+            task_box.pack_start(entry, 0, True, False)
 
         task_box.pack_end(Gtk.Alignment(), 0, True, True)            
         self.ui.task_list_alignment.add(task_box)
@@ -233,11 +205,12 @@ class TasksWindow(Window):
                 
     #=============== Handlers
     def new_task_button_pressed_cb(self, obj):     
-        summary = self.ui.new_task_box.get_text().strip()
+        summary = self.ui.new_task_box.get_text().strip().decode("utf-8")
         if not summary:
             show_alert("You must enter some text to add a task")
         else:
-            new_task = Task.objects.create(
+            new_task = self._store.create(
+                Task,
                 summary=summary
             )
             self.ui.new_task_box.set_text("")
@@ -287,19 +260,26 @@ class TasksWindow(Window):
         
         row_event_box.override_background_color(Gtk.StateType.NORMAL, colour)
         self._selected_task_box = row_event_box
-        
-    def task_completed_button_cb(self, obj, event, task):
-        task = Task.objects.get(pk=task.pk) #Reload                
-        task.complete = not task.complete
-        task.save()
+
+    def store_post_save(self, store, instance):
+        if instance.pk in self._task_entries:
+            self._task_entries[instance.pk].refresh()
         self._update_uncompleted_count()
         
-        #FIXME: self._refresh_task_in_list(task.pk)
-        #self._display_tasks(self._last_filter)
+    def task_completed_button_cb(self, obj, task, active):
+        #If the task is currently showing in the details pane, update it there
+        if self._task_details_pane and self._task_details_pane._task == task:
+            self._task_details_pane.get_checkmark().set_active(active)
+        else:
+            #Just save it here
+            task = self._store.get(Task, task.pk) #Reload                
+            task.complete = not task.complete
+            self._store.save(task)
+            
 
     def task_details_saved_cb(self, widget, task):
         print "Saving task: " + task.details
-        task.save()
+        self._store.save(task)
         self._update_uncompleted_count()
         
         #FIXME: self._refresh_task_in_list
